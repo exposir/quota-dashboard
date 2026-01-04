@@ -1,21 +1,46 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import ProviderCard from './components/ProviderCard'
+
+interface ModelQuota {
+  name: string
+  percentage: number
+  resetTime: string
+  used?: number
+  limit?: number
+}
 
 interface AccountQuota {
   email: string
   provider: string
   quota: {
-    models: Array<{
-      name: string
-      percentage: number
-      resetTime: string
-      used?: number
-      limit?: number
-    }>
+    models: ModelQuota[]
     lastUpdated: string
     isForbidden: boolean
     planType?: string
   }
+}
+
+interface SortOrder {
+  providers: string[]
+  models: Record<string, string[]>
+}
+
+const STORAGE_KEY = 'quota-dashboard-sort-order'
+
+function loadSortOrder(): SortOrder {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY)
+    if (saved) {
+      return JSON.parse(saved)
+    }
+  } catch {
+    // ignore
+  }
+  return { providers: [], models: {} }
+}
+
+function saveSortOrder(order: SortOrder): void {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(order))
 }
 
 function App() {
@@ -23,13 +48,14 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
+  const [sortOrder, setSortOrder] = useState<SortOrder>(loadSortOrder)
+  const [draggedProvider, setDraggedProvider] = useState<string | null>(null)
 
   const fetchQuotas = useCallback(async () => {
     setLoading(true)
     setError(null)
     
     try {
-      // 检查是否在 Electron 环境中
       if (window.electronAPI) {
         const result = await window.electronAPI.getAllQuotas()
         if (result.success && result.data) {
@@ -39,7 +65,6 @@ function App() {
           setError(result.error || 'Failed to fetch quotas')
         }
       } else {
-        // 开发模式：使用模拟数据
         setQuotas(getMockData())
         setLastRefresh(new Date())
       }
@@ -52,8 +77,6 @@ function App() {
 
   useEffect(() => {
     fetchQuotas()
-    
-    // 每 5 分钟自动刷新
     const interval = setInterval(fetchQuotas, 5 * 60 * 1000)
     return () => clearInterval(interval)
   }, [fetchQuotas])
@@ -66,6 +89,70 @@ function App() {
     acc[quota.provider].push(quota)
     return acc
   }, {} as Record<string, AccountQuota[]>)
+
+  // 根据保存的顺序排列 providers
+  const sortedProviders = (() => {
+    const allProviders = Object.keys(groupedQuotas)
+    const savedOrder = sortOrder.providers.filter(p => allProviders.includes(p))
+    const newProviders = allProviders.filter(p => !savedOrder.includes(p))
+    return [...savedOrder, ...newProviders]
+  })()
+
+  // Provider 拖拽处理
+  const handleProviderDragStart = (provider: string) => {
+    setDraggedProvider(provider)
+  }
+
+  const handleProviderDragOver = (e: React.DragEvent, provider: string) => {
+    e.preventDefault()
+    if (!draggedProvider || draggedProvider === provider) return
+    
+    const newOrder = [...sortedProviders]
+    const draggedIdx = newOrder.indexOf(draggedProvider)
+    const targetIdx = newOrder.indexOf(provider)
+    
+    newOrder.splice(draggedIdx, 1)
+    newOrder.splice(targetIdx, 0, draggedProvider)
+    
+    const newSortOrder = { ...sortOrder, providers: newOrder }
+    setSortOrder(newSortOrder)
+    saveSortOrder(newSortOrder)
+  }
+
+  const handleProviderDragEnd = () => {
+    setDraggedProvider(null)
+  }
+
+  // Model 排序处理
+  const handleModelReorder = (provider: string, modelNames: string[]) => {
+    const newSortOrder = {
+      ...sortOrder,
+      models: { ...sortOrder.models, [provider]: modelNames }
+    }
+    setSortOrder(newSortOrder)
+    saveSortOrder(newSortOrder)
+  }
+
+  // 获取排序后的 models
+  const getSortedModels = (provider: string, accounts: AccountQuota[]): AccountQuota[] => {
+    const savedModelOrder = sortOrder.models[provider]
+    if (!savedModelOrder || savedModelOrder.length === 0) return accounts
+
+    return accounts.map(account => ({
+      ...account,
+      quota: {
+        ...account.quota,
+        models: [...account.quota.models].sort((a, b) => {
+          const aIdx = savedModelOrder.indexOf(a.name)
+          const bIdx = savedModelOrder.indexOf(b.name)
+          if (aIdx === -1 && bIdx === -1) return 0
+          if (aIdx === -1) return 1
+          if (bIdx === -1) return -1
+          return aIdx - bIdx
+        })
+      }
+    }))
+  }
 
   return (
     <div className="app">
@@ -112,12 +199,22 @@ function App() {
         )}
 
         <div className="providers-grid">
-          {Object.entries(groupedQuotas).map(([provider, accounts]) => (
-            <ProviderCard 
-              key={provider} 
-              provider={provider} 
-              accounts={accounts} 
-            />
+          {sortedProviders.map((provider) => (
+            <div
+              key={provider}
+              draggable
+              onDragStart={() => handleProviderDragStart(provider)}
+              onDragOver={(e) => handleProviderDragOver(e, provider)}
+              onDragEnd={handleProviderDragEnd}
+              className={`provider-wrapper ${draggedProvider === provider ? 'dragging' : ''}`}
+            >
+              <ProviderCard 
+                provider={provider} 
+                accounts={getSortedModels(provider, groupedQuotas[provider])}
+                onModelReorder={(modelNames) => handleModelReorder(provider, modelNames)}
+                modelOrder={sortOrder.models[provider] || []}
+              />
+            </div>
           ))}
         </div>
       </main>

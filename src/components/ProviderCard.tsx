@@ -1,16 +1,19 @@
+import { useState, useRef } from 'react'
 import QuotaBar from './QuotaBar'
+
+interface ModelQuota {
+  name: string
+  percentage: number
+  resetTime: string
+  used?: number
+  limit?: number
+}
 
 interface AccountQuota {
   email: string
   provider: string
   quota: {
-    models: Array<{
-      name: string
-      percentage: number
-      resetTime: string
-      used?: number
-      limit?: number
-    }>
+    models: ModelQuota[]
     lastUpdated: string
     isForbidden: boolean
     planType?: string
@@ -20,6 +23,8 @@ interface AccountQuota {
 interface ProviderCardProps {
   provider: string
   accounts: AccountQuota[]
+  onModelReorder: (modelNames: string[]) => void
+  modelOrder: string[]
 }
 
 const PROVIDER_INFO: Record<string, { name: string; icon: string; color: string }> = {
@@ -71,14 +76,53 @@ function formatResetTime(isoString: string): string {
   }
 }
 
-export default function ProviderCard({ provider, accounts }: ProviderCardProps) {
+export default function ProviderCard({ provider, accounts, onModelReorder, modelOrder }: ProviderCardProps) {
   const info = PROVIDER_INFO[provider] || { name: provider, icon: '📊', color: '#666' }
+  const [draggedModel, setDraggedModel] = useState<string | null>(null)
+  
+  // 获取所有模型（用于拖拽排序）
+  const allModels = accounts.flatMap(account => account.quota.models)
+  const modelNames = allModels.map(m => m.name)
+
+  const handleModelDragStart = (e: React.DragEvent, modelName: string) => {
+    e.stopPropagation()
+    setDraggedModel(modelName)
+    e.dataTransfer.effectAllowed = 'move'
+  }
+
+  const handleModelDragOver = (e: React.DragEvent, targetModelName: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!draggedModel || draggedModel === targetModelName) return
+
+    const currentOrder = modelOrder.length ? modelOrder : modelNames
+    const validOrder = currentOrder.filter(name => modelNames.includes(name))
+    const newModels = modelNames.filter(name => !validOrder.includes(name))
+    const fullOrder = [...validOrder, ...newModels]
+
+    const draggedIdx = fullOrder.indexOf(draggedModel)
+    const targetIdx = fullOrder.indexOf(targetModelName)
+    
+    if (draggedIdx === -1 || targetIdx === -1) return
+    
+    const newOrder = [...fullOrder]
+    newOrder.splice(draggedIdx, 1)
+    newOrder.splice(targetIdx, 0, draggedModel)
+    
+    onModelReorder(newOrder)
+  }
+
+  const handleModelDragEnd = (e: React.DragEvent) => {
+    e.stopPropagation()
+    setDraggedModel(null)
+  }
   
   return (
     <div className="provider-card" style={{ '--accent-color': info.color } as React.CSSProperties}>
       <div className="provider-header">
         <span className="provider-icon">{info.icon}</span>
         <h2 className="provider-name">{info.name}</h2>
+        <span className="drag-hint">⋮⋮</span>
       </div>
       
       <div className="accounts">
@@ -99,16 +143,26 @@ export default function ProviderCard({ provider, accounts }: ProviderCardProps) 
             
             <div className="models">
               {account.quota.models.map((model) => (
-                <div key={model.name} className="model">
-                  <div className="model-info">
-                    <span className="model-name">
-                      {MODEL_NAMES[model.name] || model.name}
-                    </span>
-                    <span className="model-reset">
-                      {formatResetTime(model.resetTime)}
-                    </span>
+                <div 
+                  key={model.name} 
+                  className={`model ${draggedModel === model.name ? 'dragging' : ''}`}
+                  draggable
+                  onDragStart={(e) => handleModelDragStart(e, model.name)}
+                  onDragOver={(e) => handleModelDragOver(e, model.name)}
+                  onDragEnd={handleModelDragEnd}
+                >
+                  <div className="model-drag-handle">⋮</div>
+                  <div className="model-content">
+                    <div className="model-info">
+                      <span className="model-name">
+                        {MODEL_NAMES[model.name] || model.name}
+                      </span>
+                      <span className="model-reset">
+                        {formatResetTime(model.resetTime)}
+                      </span>
+                    </div>
+                    <QuotaBar percentage={model.percentage} />
                   </div>
-                  <QuotaBar percentage={model.percentage} />
                 </div>
               ))}
             </div>
